@@ -6,20 +6,26 @@ TD_URL = "https://api.twelvedata.com/time_series"
 RR = 1.5
 IMPULSE_MULT = 1.5
 SL_BUFFER = 0.5
-CHART_BARS = 100
+LOOKBACK = 300
+CHART_BARS = 150
+FALLBACK_BARS = 60
 LOG = "signals.csv"
 OUT = "signals.json"
-COLS = ["time", "side", "entry_low", "entry_high", "sl", "tp"]
+COLS = ["time", "side", "type", "entry_low", "entry_high", "sl", "tp"]
 
 
-def fetch(n=120):
+def now_str():
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def fetch(n=LOOKBACK):
     key = os.environ.get("8c868d19f62d468592b6bd14f6df85c5", "")
     if not key:
         raise RuntimeError("secret TWELVEDATA_KEY belum diset")
     r = requests.get(TD_URL, params={
         "symbol": SYMBOL, "interval": "5min", "outputsize": n,
         "timezone": "UTC", "apikey": key,
-    }, timeout=15)
+    }, timeout=20)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} dari Twelve Data")
     data = r.json()
@@ -45,7 +51,7 @@ def atr(rows, n=14):
 
 def find_zones(rows, side, a):
     zones = []
-    for i in range(1, len(rows) - 1):  # candle terakhir masih berjalan, tidak jadi impuls
+    for i in range(1, len(rows) - 1):  # candle terakhir masih berjalan, dilewati
         o, c = rows[i][1], rows[i][4]
         if side == "buy":
             impulsive = c > o and (c - o) >= IMPULSE_MULT * a
@@ -59,15 +65,37 @@ def find_zones(rows, side, a):
             touched = any(r[3] <= z["high"] for r in rows[i + 1:])
         else:
             touched = any(r[2] >= z["low"] for r in rows[i + 1:])
-        if not touched:
-            zones.append(z)
+        z["fresh"] = not touched
+        zones.append(z)
     return zones
 
 
-def make_plan(side, z, price, a):
-    if z is None:
-        return None
-    lo, hi = z["low"], z["high"]
+def nearest(zones, side, price):
+    if side == "buy":
+        cand = [z for z in zones if z["low"] <= price]
+        key, pick = (lambda z: z["high"]), max
+    else:
+        cand = [z for z in zones if z["high"] >= price]
+        key, pick = (lambda z: z["low"]), min
+    fresh = [z for z in cand if z["fresh"]]
+    if fresh:
+        return pick(fresh, key=key), "zona fresh"
+    if cand:
+        return pick(cand, key=key), "zona sudah pernah disentuh"
+    return None, None
+
+
+def fallback(rows, side, a):
+    recent = rows[-FALLBACK_BARS:]  # termasuk candle berjalan, jadi selalu mengapit harga
+    if side == "buy":
+        ref = min(r[3] for r in recent)
+        return {"low": ref, "high": ref + 0.5 * a}, "perkiraan dari swing low"
+    ref = max(r[2] for r in recent)
+    return {"low": ref - 0.5 * a, "high": ref}, "perkiraan dari swing high"
+
+
+def make_plan(side, zone, kind, price, a):
+    lo, hi = zone["low"], zone["high"]
     mid = (lo + hi) / 2
     if side == "buy":
         sl = lo - SL_BUFFER * a
@@ -80,20 +108,23 @@ def make_plan(side, z, price, a):
     inside = lo <= price <= hi
     dist = 0.0 if inside else min(abs(price - lo), abs(price - hi))
     return {
+        "side": side,
+        "type": kind,
         "entry_low": round(lo, 2), "entry_high": round(hi, 2),
         "sl": round(sl, 2), "tp": round(tp, 2),
-        "status": "AKTIF, harga di area" if inside else waiting,
+        "status": ("AKTIF, harga di area" if inside else waiting) + " • " + kind,
         "dist": round(dist, 2),
     }
 
 
 def build_plans(rows, price, a):
-    demand = [z for z in find_zones(rows, "buy", a) if z["low"] <= price]
-    supply = [z for z in find_zones(rows, "sell", a) if z["high"] >= price]
-    buy = max(demand, key=lambda z: z["high"], default=None)
-    sell = min(supply, key=lambda z: z["low"], default=None)
-    return {"buy": make_plan("buy", buy, price, a),
-            "sell": make_plan("sell", sell, price, a)}
+    plans = {}
+    for side in ("buy", "sell"):
+        zone, kind = nearest(find_zones(rows, side, a), side, price)
+        if zone is None:
+            zone, kind = fallback(rows, side, a)
+        plans[side] = make_plan(side, zone, kind, price, a)
+    return plans
 
 
 def ensure_log():
@@ -103,6 +134,8 @@ def ensure_log():
 
 
 def read_log():
+    if not os.path.exists(LOG):
+        return []
     with open(LOG, encoding="utf-8") as f:
         return [dict(zip(COLS, r)) for r in csv.reader(f) if r and r[0] != "time"]
 
@@ -111,13 +144,11 @@ def new_entries(plans, log, stamp):
     out = []
     for side in ("buy", "sell"):
         p = plans[side]
-        if p is None:
-            continue
         prev = next((r for r in reversed(log) if r.get("side") == side), None)
         if prev and prev.get("entry_low") == str(p["entry_low"]) \
                 and prev.get("entry_high") == str(p["entry_high"]):
             continue
-        out.append([stamp, side, p["entry_low"], p["entry_high"], p["sl"], p["tp"]])
+        out.append([stamp, side, p["type"], p["entry_low"], p["entry_high"], p["sl"], p["tp"]])
     return out
 
 
@@ -141,7 +172,7 @@ def set_error(stamp, msg):
 
 
 def main():
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    stamp = now_str()
     try:
         rows = fetch()
         price = rows[-1][4]
@@ -151,14 +182,13 @@ def main():
         if fresh:
             with open(LOG, "a", newline="", encoding="utf-8") as f:
                 csv.writer(f).writerows(fresh)
-        log = read_log()
         write_json({
             "updated": stamp,
             "price": round(price, 2),
             "candles": [{"time": to_ts(t), "open": o, "high": h, "low": l, "close": c}
                         for t, o, h, l, c in rows[-CHART_BARS:]],
             "plans": plans,
-            "log": log[-30:][::-1],
+            "log": read_log()[-30:][::-1],
         })
         print("plans:", plans)
     except RuntimeError as e:
