@@ -12,7 +12,7 @@ LOG = "signals.csv"
 def fetch(n=60):
     r = requests.get(TD_URL, params={
         "symbol": SYMBOL, "interval": "5min", "outputsize": n + 1,
-        "timezone": "UTC", "apikey": os.environ[8c868d19f62d468592b6bd14f6df85c5],
+        "timezone": "UTC", "apikey": os.environ["8c868d19f62d468592b6bd14f6df85c5"],
     }, timeout=15)
     r.raise_for_status()
     data = r.json()
@@ -98,8 +98,8 @@ def is_duplicate(s):
 
 def notify(text):
     try:
-        requests.post(f"https://api.telegram.org/bot{os.environ[8926741783:AAG1nHi1FG2HoTl7D3d7r8EcIYnAlUg1yuM]}/sendMessage",
-                      json={"chat_id": os.environ[524505436], "text": text}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{os.environ["8926741783:AAG1nHi1FG2HoTl7D3d7r8EcIYnAlUg1yuM"]}/sendMessage",
+                      json={"chat_id": os.environ["524505436"], "text": text}, timeout=10)
     except requests.RequestException as e:
         print(f"notifikasi gagal: {e}")
 
