@@ -3,77 +3,168 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XAUUSD Signal</title>
+<title>XAUUSD Plan</title>
 <style>
-body{font-family:system-ui,sans-serif;margin:16px;background:#111;color:#eee}
-h2{margin:0 0 4px}
+body{font-family:system-ui,sans-serif;margin:12px;background:#111;color:#eee}
+h2{margin:0 0 2px}
+h3{margin:18px 0 8px;font-size:15px}
 .muted{color:#9ca3af;font-size:13px}
-.card{border:1px solid #333;border-radius:8px;padding:12px;margin:12px 0}
-.BUY{color:#4ade80}.SELL{color:#f87171}.NO_TRADE{color:#9ca3af}
+.chart{height:300px;width:100%;border:1px solid #333;border-radius:8px;overflow:hidden}
+.card{border:1px solid #333;border-radius:8px;padding:12px;margin:10px 0}
+.card.buy{border-color:#166534}
+.card.sell{border-color:#7f1d1d}
+.BUY{color:#4ade80}
+.SELL{color:#f87171}
+.row{display:flex;justify-content:space-between;gap:8px;font-size:14px;padding:3px 0}
 .wrap{overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-size:13px;min-width:520px}
-td,th{border-bottom:1px solid #333;padding:6px;text-align:left;vertical-align:top}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:420px}
+td,th{border-bottom:1px solid #333;padding:6px;text-align:left}
 </style>
 </head>
 <body>
-<h2>XAUUSD Signal</h2>
+<h2>XAUUSD Plan</h2>
 <div class="muted" id="updated">memuat...</div>
-<div class="card" id="latest"></div>
+
+<h3>Chart live (TradingView)</h3>
+<div class="chart" id="tv"></div>
+
+<h3>Chart plan zona (update tiap run)</h3>
+<div class="chart" id="plan"></div>
+
+<h3>Plan area</h3>
+<div id="plans"></div>
+
+<h3>Riwayat perubahan plan</h3>
 <div class="wrap">
 <table>
-<thead><tr><th>Waktu (UTC)</th><th>Aksi</th><th>Area</th><th>SL</th><th>TP</th><th>Alasan</th></tr></thead>
+<thead><tr><th>Waktu (UTC)</th><th>Sisi</th><th>Area</th><th>SL</th><th>TP</th></tr></thead>
 <tbody id="rows"></tbody>
 </table>
 </div>
+
+<script src="https://s3.tradingview.com/tv.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
-function cell(text, cls) {
-  const td = document.createElement("td");
-  td.textContent = text ?? "";
-  if (cls) td.className = cls;
-  return td;
+const fmt = (n) => (n === null || n === undefined ? "-" : Number(n).toFixed(2));
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  e.textContent = text ?? "";
+  if (cls) e.className = cls;
+  return e;
+}
+
+function row(k, v) {
+  const r = el("div", "", "row");
+  r.append(el("span", k), el("span", v));
+  return r;
+}
+
+function planCard(side, p) {
+  const label = side.toUpperCase();
+  const card = el("div", "", "card " + side);
+  const head = el("div", label + (p ? " • " + p.status : " • tidak ada zona fresh"), label);
+  head.style.fontWeight = "bold";
+  card.append(head);
+  if (p) {
+    card.append(
+      row("Area", `${fmt(p.entry_low)} - ${fmt(p.entry_high)}`),
+      row("SL", fmt(p.sl)),
+      row("TP", fmt(p.tp)),
+      row("Jarak dari harga", fmt(p.dist) + " poin")
+    );
+  }
+  return card;
+}
+
+function drawPlanChart(data) {
+  const box = document.getElementById("plan");
+  box.textContent = "";
+  if (!window.LightweightCharts || !data.candles || !data.candles.length) {
+    box.textContent = "Chart plan belum tersedia";
+    return;
+  }
+  const chart = LightweightCharts.createChart(box, {
+    width: box.clientWidth,
+    height: box.clientHeight,
+    layout: { background: { color: "#111" }, textColor: "#ddd" },
+    grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
+    timeScale: { timeVisible: true, borderColor: "#333" },
+    rightPriceScale: { borderColor: "#333" },
+  });
+  const series = chart.addCandlestickSeries({
+    upColor: "#4ade80", downColor: "#f87171",
+    wickUpColor: "#4ade80", wickDownColor: "#f87171", borderVisible: false,
+  });
+  series.setData(data.candles);
+
+  const S = LightweightCharts.LineStyle;
+  const plans = data.plans || {};
+  for (const side of ["buy", "sell"]) {
+    const p = plans[side];
+    if (!p) continue;
+    const label = side.toUpperCase();
+    const color = side === "buy" ? "#4ade80" : "#f87171";
+    series.createPriceLine({ price: p.entry_high, color, lineWidth: 2, lineStyle: S.Solid,
+      axisLabelVisible: true, title: label + " atas" });
+    series.createPriceLine({ price: p.entry_low, color, lineWidth: 2, lineStyle: S.Solid,
+      axisLabelVisible: true, title: label + " bawah" });
+    series.createPriceLine({ price: p.sl, color: "#9ca3af", lineWidth: 1, lineStyle: S.Dotted,
+      axisLabelVisible: true, title: label + " SL" });
+    series.createPriceLine({ price: p.tp, color: "#60a5fa", lineWidth: 1, lineStyle: S.Dashed,
+      axisLabelVisible: true, title: label + " TP" });
+  }
+  chart.timeScale().fitContent();
 }
 
 async function load() {
+  const upd = document.getElementById("updated");
   try {
     const res = await fetch("signals.json?t=" + Date.now(), { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
-    const rows = data.rows || [];
+    upd.textContent = `Diperbarui: ${data.updated} • harga ${fmt(data.price)}` +
+      (data.error ? ` • ${data.error}` : "");
 
-    document.getElementById("updated").textContent = "Diperbarui: " + data.updated;
-
-    const latest = document.getElementById("latest");
-    latest.textContent = "";
-    if (rows.length) {
-      const t = rows[0];
-      const head = document.createElement("div");
-      head.className = t.action;
-      head.style.fontWeight = "bold";
-      head.textContent = t.action + " • " + t.time;
-      const detail = document.createElement("div");
-      detail.textContent = t.action === "NO_TRADE"
-        ? t.reason
-        : `Area ${t.entry_low} - ${t.entry_high} | SL ${t.sl} | TP ${t.tp}`;
-      latest.append(head, detail);
-    }
+    const plans = data.plans || {};
+    const box = document.getElementById("plans");
+    box.textContent = "";
+    box.append(planCard("buy", plans.buy), planCard("sell", plans.sell));
 
     const tbody = document.getElementById("rows");
     tbody.textContent = "";
-    for (const r of rows) {
+    for (const r of data.log || []) {
+      const side = (r.side || "").toUpperCase();
       const tr = document.createElement("tr");
       tr.append(
-        cell(r.time),
-        cell(r.action, r.action),
-        cell(r.action === "NO_TRADE" ? "" : `${r.entry_low} - ${r.entry_high}`),
-        cell(r.sl),
-        cell(r.tp),
-        cell(r.reason)
+        el("td", r.time),
+        el("td", side, side),
+        el("td", `${r.entry_low} - ${r.entry_high}`),
+        el("td", r.sl),
+        el("td", r.tp)
       );
       tbody.appendChild(tr);
     }
+
+    drawPlanChart(data);
   } catch (e) {
-    document.getElementById("updated").textContent = "Gagal memuat data: " + e.message;
+    upd.textContent = "Gagal memuat data: " + e.message;
   }
+}
+
+if (window.TradingView) {
+  new TradingView.widget({
+    autosize: true,
+    symbol: "OANDA:XAUUSD",
+    interval: "5",
+    timezone: "Etc/UTC",
+    theme: "dark",
+    style: "1",
+    locale: "en",
+    hide_side_toolbar: true,
+    allow_symbol_change: false,
+    container_id: "tv"
+  });
 }
 
 load();
