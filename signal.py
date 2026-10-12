@@ -1,4 +1,4 @@
-import csv, datetime as dt, os
+import csv, datetime as dt, json, os
 import requests
 
 SYMBOL = "XAU/USD"
@@ -7,6 +7,8 @@ MIN_RR = 1.5
 IMPULSE_MULT = 1.5
 SL_BUFFER = 0.5
 LOG = "signals.csv"
+OUT = "signals.json"
+COLS = ["time", "action", "entry_low", "entry_high", "sl", "tp", "reason"]
 
 
 def fetch(n=60):
@@ -14,7 +16,8 @@ def fetch(n=60):
         "symbol": SYMBOL, "interval": "5min", "outputsize": n + 1,
         "timezone": "UTC", "apikey": os.environ["8c868d19f62d468592b6bd14f6df85c5"],
     }, timeout=15)
-    r.raise_for_status()
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} dari Twelve Data")
     data = r.json()
     if data.get("status") != "ok" or "values" not in data:
         raise RuntimeError(data.get("message", "respons tidak dikenal"))
@@ -33,7 +36,7 @@ def atr(rows, n=14):
 
 def find_zones(rows, side, a):
     zones = []
-    for i in range(1, len(rows) - 1):
+    for i in range(1, len(rows)):
         o, c = rows[i][1], rows[i][4]
         if side == "buy":
             impulsive = c > o and (c - o) >= IMPULSE_MULT * a
@@ -44,9 +47,9 @@ def find_zones(rows, side, a):
         base = rows[i - 1]
         z = {"low": base[3], "high": base[2]}
         if side == "buy":
-            touched = any(r[3] <= z["high"] for r in rows[i + 1:-1])
+            touched = any(r[3] <= z["high"] for r in rows[i + 1:])
         else:
-            touched = any(r[2] >= z["low"] for r in rows[i + 1:-1])
+            touched = any(r[2] >= z["low"] for r in rows[i + 1:])
         if not touched:
             zones.append(z)
     return zones
@@ -84,48 +87,58 @@ def valid(s):
     return ok and rr >= MIN_RR - 0.01
 
 
-def is_duplicate(s):
+def read_log():
     if not os.path.exists(LOG):
-        return False
+        return []
     with open(LOG, encoding="utf-8") as f:
-        rows = list(csv.reader(f))
-    if not rows:
+        return [dict(zip(COLS, r)) for r in csv.reader(f) if r and r[0] != "time"]
+
+
+def is_duplicate(s, rows):
+    if s["action"] == "NO_TRADE" or not rows:
         return False
     last = rows[-1]
-    return (last[1] == s["action"] and last[2] == str(s["entry_low"])
-            and last[3] == str(s["entry_high"]))
+    return (last["action"] == s["action"] and last["entry_low"] == str(s["entry_low"])
+            and last["entry_high"] == str(s["entry_high"]))
 
 
-def notify(text):
-    try:token = os.environ["AAG1nHi1FG2HoTl7D3d7r8EcIYnAlUg1yu"]
-        chat_id = os.environ.get("524505436")
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-        requests.post(url, json={"524505436": chat_id, "text": text}, timeout=10)
-    except requests.RequestException as e:
-        print(f"notifikasi gagal: {e}")
+def export(rows):
+    data = {"updated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "rows": rows[-50:][::-1]}
+    with open(OUT, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
 
 
 def main():
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     try:
         m5 = fetch()
-        price = m5[-1][4]
-        s = rule_signal(m5, price)
+        s = rule_signal(m5, m5[-1][4])
         if not valid(s):
             s = {"action": "NO_TRADE", "reason": "RR kurang dari 1:1,5"}
-    except Exception as e:
+    except KeyError as e:
+        s = {"action": "NO_TRADE", "reason": f"env tidak ditemukan: {e}"}
+    except RuntimeError as e:
         s = {"action": "NO_TRADE", "reason": f"error: {e}"}
+    except Exception as e:
+        s = {"action": "NO_TRADE", "reason": f"error: {type(e).__name__}"}
 
-    dup = s["action"] != "NO_TRADE" and is_duplicate(s)
-    row = [now, s["action"], s.get("entry_low"), s.get("entry_high"),
-           s.get("sl"), s.get("tp"), s["reason"]]
-    with open(LOG, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(row)
+    rows = read_log()
+    if is_duplicate(s, rows):
+        print("sinyal sama dengan sebelumnya, tidak dicatat ulang")
+    else:
+        line = [now, s["action"], s.get("entry_low"), s.get("entry_high"),
+                s.get("sl"), s.get("tp"), s["reason"]]
+        new_file = not os.path.exists(LOG)
+        with open(LOG, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new_file:
+                w.writerow(COLS)
+            w.writerow(line)
+        rows = read_log()
+        print(line)
 
-    if s["action"] != "NO_TRADE" and not dup:
-        notify(f"XAUUSD {s['action']}\nArea: {s['entry_low']} - {s['entry_high']}\n"
-               f"SL: {s['sl']}\nTP: {s['tp']}\n{s['reason']}")
-    print(row)
+    export(rows)
 
 
 if __name__ == "__main__":
