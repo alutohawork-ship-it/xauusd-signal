@@ -9,42 +9,52 @@ body{font-family:system-ui,sans-serif;margin:12px;background:#111;color:#eee}
 h2{margin:0 0 2px}
 h3{margin:18px 0 8px;font-size:15px}
 .muted{color:#9ca3af;font-size:13px}
-.chart{height:300px;width:100%;border:1px solid #333;border-radius:8px;overflow:hidden}
+.err{color:#fca5a5;font-size:14px;margin:6px 0}
+.modes{display:flex;gap:8px;margin:12px 0}
+button{flex:1;padding:10px;border-radius:8px;border:1px solid #444;background:#1f1f1f;color:#eee;font-size:15px}
+button.on{background:#2563eb;border-color:#2563eb}
+button.gen{width:100%;background:#16a34a;border-color:#16a34a;font-weight:bold;margin-top:4px}
+button:disabled{opacity:.6}
+.link{display:block;text-align:center;margin:14px 0;color:#60a5fa;font-size:14px}
+.chart{height:280px;width:100%;border:1px solid #333;border-radius:8px;overflow:hidden}
 .card{border:1px solid #333;border-radius:8px;padding:12px;margin:10px 0}
 .card.buy{border-color:#166534}
 .card.sell{border-color:#7f1d1d}
 .BUY{color:#4ade80}
 .SELL{color:#f87171}
 .row{display:flex;justify-content:space-between;gap:8px;font-size:14px;padding:3px 0}
-.wrap{overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-size:13px;min-width:420px}
-td,th{border-bottom:1px solid #333;padding:6px;text-align:left}
 </style>
 </head>
 <body>
 <h2>XAUUSD Plan</h2>
-<div class="muted" id="updated">memuat...</div>
+<div class="muted" id="status">memuat...</div>
+
+<div class="modes">
+  <button data-mode="scalping" class="on">Scalping</button>
+  <button data-mode="intraday">Intraday</button>
+  <button data-mode="swing">Swing</button>
+</div>
+<button class="gen" id="gen">Generate signal</button>
+<div class="muted" id="genat"></div>
+<a class="link" href="https://github.com/alutohawork-ship-it/xauusd-signal/actions/workflows/signal.yml" target="_blank" rel="noopener">Ambil data market terbaru (GitHub Actions)</a>
+
+<div id="cards"><div class="muted">Pilih mode, lalu tekan Generate signal.</div></div>
+
+<h3>Chart plan • <span id="planinfo"></span></h3>
+<div class="chart" id="plan"></div>
 
 <h3>Chart live (TradingView)</h3>
 <div class="chart" id="tv"></div>
 
-<h3>Chart plan zona (update tiap run)</h3>
-<div class="chart" id="plan"></div>
-
-<h3>Plan area</h3>
-<div id="plans"></div>
-
-<h3>Riwayat perubahan plan</h3>
-<div class="wrap">
-<table>
-<thead><tr><th>Waktu (UTC)</th><th>Sisi</th><th>Area</th><th>SL</th><th>TP</th></tr></thead>
-<tbody id="rows"></tbody>
-</table>
-</div>
-
 <script src="https://s3.tradingview.com/tv.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
+const TV_INTERVAL = { scalping: "5", intraday: "15", swing: "240" };
+let DATA = null;
+let MODE = "scalping";
+let GENERATED = false;
+
+const $ = (id) => document.getElementById(id);
 const fmt = (n) => (n === null || n === undefined ? "-" : Number(n).toFixed(2));
 
 function el(tag, text, cls) {
@@ -60,28 +70,47 @@ function row(k, v) {
   return r;
 }
 
-function planCard(side, p) {
+function card(side, p) {
   const label = side.toUpperCase();
-  const card = el("div", "", "card " + side);
-  const head = el("div", label + (p ? " • " + p.status : " • tidak ada zona fresh"), label);
+  const c = el("div", "", "card " + side);
+  const head = el("div", `${label} • ${p.status}`, label);
   head.style.fontWeight = "bold";
-  card.append(head);
-  if (p) {
-    card.append(
-      row("Area", `${fmt(p.entry_low)} - ${fmt(p.entry_high)}`),
-      row("SL", fmt(p.sl)),
-      row("TP", fmt(p.tp)),
-      row("Jarak dari harga", fmt(p.dist) + " poin")
-    );
-  }
-  return card;
+  c.append(
+    head,
+    row("Area", `${fmt(p.entry_low)} - ${fmt(p.entry_high)}`),
+    row("SL", fmt(p.sl)),
+    row("TP", fmt(p.tp)),
+    row("Jarak dari harga", `${fmt(p.dist)} poin`)
+  );
+  return c;
 }
 
-function drawPlanChart(data) {
-  const box = document.getElementById("plan");
+function drawTV() {
+  const box = $("tv");
   box.textContent = "";
-  if (!window.LightweightCharts || !data.candles || !data.candles.length) {
-    box.textContent = "Chart plan belum tersedia";
+  if (!window.TradingView) {
+    box.textContent = "Widget TradingView gagal dimuat.";
+    return;
+  }
+  new TradingView.widget({
+    autosize: true,
+    symbol: "OANDA:XAUUSD",
+    interval: TV_INTERVAL[MODE],
+    timezone: "Etc/UTC",
+    theme: "dark",
+    style: "1",
+    locale: "en",
+    hide_side_toolbar: true,
+    allow_symbol_change: false,
+    container_id: "tv",
+  });
+}
+
+function drawPlan(m) {
+  const box = $("plan");
+  box.textContent = "";
+  if (!window.LightweightCharts) {
+    box.textContent = "Library chart gagal dimuat. Cek koneksi lalu refresh.";
     return;
   }
   const chart = LightweightCharts.createChart(box, {
@@ -96,13 +125,11 @@ function drawPlanChart(data) {
     upColor: "#4ade80", downColor: "#f87171",
     wickUpColor: "#4ade80", wickDownColor: "#f87171", borderVisible: false,
   });
-  series.setData(data.candles);
+  series.setData(m.candles);
 
   const S = LightweightCharts.LineStyle;
-  const plans = data.plans || {};
   for (const side of ["buy", "sell"]) {
-    const p = plans[side];
-    if (!p) continue;
+    const p = m.plans[side];
     const label = side.toUpperCase();
     const color = side === "buy" ? "#4ade80" : "#f87171";
     series.createPriceLine({ price: p.entry_high, color, lineWidth: 2, lineStyle: S.Solid,
@@ -117,58 +144,61 @@ function drawPlanChart(data) {
   chart.timeScale().fitContent();
 }
 
-async function load() {
-  const upd = document.getElementById("updated");
+function render() {
+  const cards = $("cards");
+  cards.textContent = "";
+  const m = DATA && DATA.modes ? DATA.modes[MODE] : null;
+  const err = DATA && DATA.errors ? DATA.errors[MODE] : null;
+  if (err) cards.append(el("div", "Catatan: " + err, "err"));
+  if (!m) {
+    cards.append(el("div", "Data untuk mode ini belum tersedia.", "muted"));
+    $("plan").textContent = "";
+    $("planinfo").textContent = "";
+    return;
+  }
+  cards.append(card("buy", m.plans.buy), card("sell", m.plans.sell));
+  $("planinfo").textContent = `${m.label} • data ${m.updated} • harga ${fmt(m.price)}`;
+  drawPlan(m);
+}
+
+async function loadData() {
+  const res = await fetch("signals.json?t=" + Date.now(), { cache: "no-store" });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  DATA = await res.json();
+  $("status").textContent = "Data market terakhir: " + DATA.updated;
+}
+
+async function generate() {
+  const btn = $("gen");
+  btn.disabled = true;
+  btn.textContent = "Memuat...";
   try {
-    const res = await fetch("signals.json?t=" + Date.now(), { cache: "no-store" });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    upd.textContent = `Diperbarui: ${data.updated} • harga ${fmt(data.price)}` +
-      (data.error ? ` • ${data.error}` : "");
-
-    const plans = data.plans || {};
-    const box = document.getElementById("plans");
-    box.textContent = "";
-    box.append(planCard("buy", plans.buy), planCard("sell", plans.sell));
-
-    const tbody = document.getElementById("rows");
-    tbody.textContent = "";
-    for (const r of data.log || []) {
-      const side = (r.side || "").toUpperCase();
-      const tr = document.createElement("tr");
-      tr.append(
-        el("td", r.time),
-        el("td", side, side),
-        el("td", `${r.entry_low} - ${r.entry_high}`),
-        el("td", r.sl),
-        el("td", r.tp)
-      );
-      tbody.appendChild(tr);
-    }
-
-    drawPlanChart(data);
+    await loadData();
+    GENERATED = true;
+    render();
+    $("genat").textContent = "Dibuat pukul " +
+      new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
   } catch (e) {
-    upd.textContent = "Gagal memuat data: " + e.message;
+    $("status").textContent = "Gagal memuat data: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Generate signal";
   }
 }
 
-if (window.TradingView) {
-  new TradingView.widget({
-    autosize: true,
-    symbol: "OANDA:XAUUSD",
-    interval: "5",
-    timezone: "Etc/UTC",
-    theme: "dark",
-    style: "1",
-    locale: "en",
-    hide_side_toolbar: true,
-    allow_symbol_change: false,
-    container_id: "tv"
-  });
+function setMode(m) {
+  MODE = m;
+  document.querySelectorAll("[data-mode]").forEach((b) =>
+    b.classList.toggle("on", b.dataset.mode === m));
+  drawTV();
+  if (GENERATED) render();
 }
 
-load();
-setInterval(load, 60000);
+document.querySelectorAll("[data-mode]").forEach((b) =>
+  b.addEventListener("click", () => setMode(b.dataset.mode)));
+$("gen").addEventListener("click", generate);
+drawTV();
+loadData().catch((e) => { $("status").textContent = "Gagal memuat data: " + e.message; });
 </script>
 </body>
 </html>
