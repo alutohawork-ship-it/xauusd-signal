@@ -3,27 +3,36 @@ import requests
 
 SYMBOL = "XAU/USD"
 TD_URL = "https://api.twelvedata.com/time_series"
-MIN_RR = 1.5
+RR = 1.5
 IMPULSE_MULT = 1.5
 SL_BUFFER = 0.5
+CHART_BARS = 100
 LOG = "signals.csv"
 OUT = "signals.json"
-COLS = ["time", "action", "entry_low", "entry_high", "sl", "tp", "reason"]
+COLS = ["time", "side", "entry_low", "entry_high", "sl", "tp"]
 
 
-def fetch(n=60):
+def fetch(n=120):
+    key = os.environ.get("8c868d19f62d468592b6bd14f6df85c5", "")
+    if not key:
+        raise RuntimeError("secret TWELVEDATA_KEY belum diset")
     r = requests.get(TD_URL, params={
-        "symbol": SYMBOL, "interval": "5min", "outputsize": n + 1,
-        "timezone": "UTC", "apikey": os.environ["8c868d19f62d468592b6bd14f6df85c5"],
+        "symbol": SYMBOL, "interval": "5min", "outputsize": n,
+        "timezone": "UTC", "apikey": key,
     }, timeout=15)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} dari Twelve Data")
     data = r.json()
     if data.get("status") != "ok" or "values" not in data:
-        raise RuntimeError(data.get("message", "respons tidak dikenal"))
-    rows = [(v["datetime"], float(v["open"]), float(v["high"]),
+        msg = str(data.get("message", "respons tidak valid")).replace(key, "***")
+        raise RuntimeError(msg)
+    return [(v["datetime"], float(v["open"]), float(v["high"]),
              float(v["low"]), float(v["close"])) for v in reversed(data["values"])]
-    return rows[:-1]
+
+
+def to_ts(s):
+    t = dt.datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    return int(t.replace(tzinfo=dt.timezone.utc).timestamp())
 
 
 def atr(rows, n=14):
@@ -36,7 +45,7 @@ def atr(rows, n=14):
 
 def find_zones(rows, side, a):
     zones = []
-    for i in range(1, len(rows)):
+    for i in range(1, len(rows) - 1):  # candle terakhir masih berjalan, tidak jadi impuls
         o, c = rows[i][1], rows[i][4]
         if side == "buy":
             impulsive = c > o and (c - o) >= IMPULSE_MULT * a
@@ -55,90 +64,107 @@ def find_zones(rows, side, a):
     return zones
 
 
-def rule_signal(m5, price):
-    a = atr(m5)
-    for side in ("buy", "sell"):
-        for z in reversed(find_zones(m5, side, a)):
-            if not (z["low"] <= price <= z["high"]):
-                continue
-            lo, hi = z["low"], z["high"]
-            mid = (lo + hi) / 2
-            if side == "buy":
-                sl = lo - SL_BUFFER * a
-                tp = mid + (mid - sl) * MIN_RR
-                action, name = "BUY", "demand"
-            else:
-                sl = hi + SL_BUFFER * a
-                tp = mid - (sl - mid) * MIN_RR
-                action, name = "SELL", "supply"
-            return {"action": action, "entry_low": round(lo, 2), "entry_high": round(hi, 2),
-                    "sl": round(sl, 2), "tp": round(tp, 2),
-                    "reason": f"zona {name} M5 fresh, harga di area zona"}
-    return {"action": "NO_TRADE", "reason": "tidak ada zona fresh di harga sekarang"}
-
-
-def valid(s):
-    if s["action"] == "NO_TRADE":
-        return True
-    lo, hi, sl, tp = s["entry_low"], s["entry_high"], s["sl"], s["tp"]
+def make_plan(side, z, price, a):
+    if z is None:
+        return None
+    lo, hi = z["low"], z["high"]
     mid = (lo + hi) / 2
-    ok = sl < lo <= hi < tp if s["action"] == "BUY" else tp < lo <= hi < sl
-    rr = abs(tp - mid) / abs(mid - sl)
-    return ok and rr >= MIN_RR - 0.01
+    if side == "buy":
+        sl = lo - SL_BUFFER * a
+        tp = mid + (mid - sl) * RR
+        waiting = "MENUNGGU harga turun ke area"
+    else:
+        sl = hi + SL_BUFFER * a
+        tp = mid - (sl - mid) * RR
+        waiting = "MENUNGGU harga naik ke area"
+    inside = lo <= price <= hi
+    dist = 0.0 if inside else min(abs(price - lo), abs(price - hi))
+    return {
+        "entry_low": round(lo, 2), "entry_high": round(hi, 2),
+        "sl": round(sl, 2), "tp": round(tp, 2),
+        "status": "AKTIF, harga di area" if inside else waiting,
+        "dist": round(dist, 2),
+    }
+
+
+def build_plans(rows, price, a):
+    demand = [z for z in find_zones(rows, "buy", a) if z["low"] <= price]
+    supply = [z for z in find_zones(rows, "sell", a) if z["high"] >= price]
+    buy = max(demand, key=lambda z: z["high"], default=None)
+    sell = min(supply, key=lambda z: z["low"], default=None)
+    return {"buy": make_plan("buy", buy, price, a),
+            "sell": make_plan("sell", sell, price, a)}
+
+
+def ensure_log():
+    if not os.path.exists(LOG):
+        with open(LOG, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(COLS)
 
 
 def read_log():
-    if not os.path.exists(LOG):
-        return []
     with open(LOG, encoding="utf-8") as f:
         return [dict(zip(COLS, r)) for r in csv.reader(f) if r and r[0] != "time"]
 
 
-def is_duplicate(s, rows):
-    if s["action"] == "NO_TRADE" or not rows:
-        return False
-    last = rows[-1]
-    return (last["action"] == s["action"] and last["entry_low"] == str(s["entry_low"])
-            and last["entry_high"] == str(s["entry_high"]))
+def new_entries(plans, log, stamp):
+    out = []
+    for side in ("buy", "sell"):
+        p = plans[side]
+        if p is None:
+            continue
+        prev = next((r for r in reversed(log) if r.get("side") == side), None)
+        if prev and prev.get("entry_low") == str(p["entry_low"]) \
+                and prev.get("entry_high") == str(p["entry_high"]):
+            continue
+        out.append([stamp, side, p["entry_low"], p["entry_high"], p["sl"], p["tp"]])
+    return out
 
 
-def export(rows):
-    data = {"updated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            "rows": rows[-50:][::-1]}
+def write_json(data):
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
 
+def set_error(stamp, msg):
+    data = {}
+    if os.path.exists(OUT):
+        try:
+            with open(OUT, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    data["updated"] = stamp
+    data["error"] = msg
+    write_json(data)
+    print(msg)
+
+
 def main():
-    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     try:
-        m5 = fetch()
-        s = rule_signal(m5, m5[-1][4])
-        if not valid(s):
-            s = {"action": "NO_TRADE", "reason": "RR kurang dari 1:1,5"}
-    except KeyError as e:
-        s = {"action": "NO_TRADE", "reason": f"env tidak ditemukan: {e}"}
+        rows = fetch()
+        price = rows[-1][4]
+        plans = build_plans(rows, price, atr(rows[:-1]))
+        ensure_log()
+        fresh = new_entries(plans, read_log(), stamp)
+        if fresh:
+            with open(LOG, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(fresh)
+        log = read_log()
+        write_json({
+            "updated": stamp,
+            "price": round(price, 2),
+            "candles": [{"time": to_ts(t), "open": o, "high": h, "low": l, "close": c}
+                        for t, o, h, l, c in rows[-CHART_BARS:]],
+            "plans": plans,
+            "log": log[-30:][::-1],
+        })
+        print("plans:", plans)
     except RuntimeError as e:
-        s = {"action": "NO_TRADE", "reason": f"error: {e}"}
+        set_error(stamp, str(e))
     except Exception as e:
-        s = {"action": "NO_TRADE", "reason": f"error: {type(e).__name__}"}
-
-    rows = read_log()
-    if is_duplicate(s, rows):
-        print("sinyal sama dengan sebelumnya, tidak dicatat ulang")
-    else:
-        line = [now, s["action"], s.get("entry_low"), s.get("entry_high"),
-                s.get("sl"), s.get("tp"), s["reason"]]
-        new_file = not os.path.exists(LOG)
-        with open(LOG, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            if new_file:
-                w.writerow(COLS)
-            w.writerow(line)
-        rows = read_log()
-        print(line)
-
-    export(rows)
+        set_error(stamp, f"error: {type(e).__name__}")
 
 
 if __name__ == "__main__":
