@@ -14,8 +14,7 @@ def fetch(n=60):
         "symbol": SYMBOL, "interval": "5min", "outputsize": n + 1,
         "timezone": "UTC", "apikey": os.environ["8c868d19f62d468592b6bd14f6df85c5"],
     }, timeout=15)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code} dari Twelve Data")
+    r.raise_for_status()
     data = r.json()
     if data.get("status") != "ok" or "values" not in data:
         raise RuntimeError(data.get("message", "respons tidak dikenal"))
@@ -34,7 +33,7 @@ def atr(rows, n=14):
 
 def find_zones(rows, side, a):
     zones = []
-    for i in range(1, len(rows)):
+    for i in range(1, len(rows) - 1):
         o, c = rows[i][1], rows[i][4]
         if side == "buy":
             impulsive = c > o and (c - o) >= IMPULSE_MULT * a
@@ -45,9 +44,9 @@ def find_zones(rows, side, a):
         base = rows[i - 1]
         z = {"low": base[3], "high": base[2]}
         if side == "buy":
-            touched = any(r[3] <= z["high"] for r in rows[i + 1:])
+            touched = any(r[3] <= z["high"] for r in rows[i + 1:-1])
         else:
-            touched = any(r[2] >= z["low"] for r in rows[i + 1:])
+            touched = any(r[2] >= z["low"] for r in rows[i + 1:-1])
         if not touched:
             zones.append(z)
     return zones
@@ -99,12 +98,12 @@ def is_duplicate(s):
 
 def notify(text):
     try:
-        token = os.environ["8926741783:AAG1nHi1FG2HoTl7D3d7r8EcIYnAlUg1yu"]
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                      json={"chat_id": os.environ["524505436"], "text": text},
-                      timeout=10)
-    except Exception as e:
-        print(f"notifikasi gagal: {type(e).__name__}")
+        token = os.environ.get("8926741783:AAG1nHi1FG2HoTl7D3d7r8EcIYnAlUg1yu")
+        chat_id = os.environ.get("524505436")
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+    except requests.RequestException as e:
+        print(f"notifikasi gagal: {e}")
 
 
 def main():
@@ -114,13 +113,9 @@ def main():
         price = m5[-1][4]
         s = rule_signal(m5, price)
         if not valid(s):
-            s = {"action": "NO_TRADE", "reason": "RR kurang dari 1:1,5 atau data tidak valid"}
-    except RuntimeError as e:
-        s = {"action": "NO_TRADE", "reason": f"error: {e}"}
-    except KeyError as e:
-        s = {"action": "NO_TRADE", "reason": f"env tidak ditemukan: {e}"}
+            s = {"action": "NO_TRADE", "reason": "RR kurang dari 1:1,5"}
     except Exception as e:
-        s = {"action": "NO_TRADE", "reason": f"error: {type(e).__name__}"}
+        s = {"action": "NO_TRADE", "reason": f"error: {e}"}
 
     dup = s["action"] != "NO_TRADE" and is_duplicate(s)
     row = [now, s["action"], s.get("entry_low"), s.get("entry_high"),
