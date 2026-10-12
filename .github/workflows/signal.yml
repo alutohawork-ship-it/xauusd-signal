@@ -1,0 +1,27 @@
+name: xauusd-signal
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python signal.py
+        env:
+          TWELVEDATA_KEY: ${{ secrets.8c868d19f62d468592b6bd14f6df85c5 }}
+          TELEGRAM_TOKEN: ${{ secrets.8926741783:AAG1nHi1FG2HoTl7D3d7r8EcIYnAlUg1yuM }}
+          TELEGRAM_CHAT_ID: ${{ secrets.524505436 }}
+      - name: simpan log
+        run: |
+          git config user.name "signal-bot"
+          git config user.email "signal-bot@users.noreply.github.com"
+          git add signals.csv
+          git diff --cached --quiet || (git commit -m "log signal" && git push)
