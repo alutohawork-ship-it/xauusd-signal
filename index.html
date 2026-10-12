@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XAUUSD Signal</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:16px;background:#111;color:#eee}
+h2{margin:0 0 4px}
+.muted{color:#9ca3af;font-size:13px}
+.card{border:1px solid #333;border-radius:8px;padding:12px;margin:12px 0}
+.BUY{color:#4ade80}.SELL{color:#f87171}.NO_TRADE{color:#9ca3af}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:520px}
+td,th{border-bottom:1px solid #333;padding:6px;text-align:left;vertical-align:top}
+</style>
+</head>
+<body>
+<h2>XAUUSD Signal</h2>
+<div class="muted" id="updated">memuat...</div>
+<div class="card" id="latest"></div>
+<div class="wrap">
+<table>
+<thead><tr><th>Waktu (UTC)</th><th>Aksi</th><th>Area</th><th>SL</th><th>TP</th><th>Alasan</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
+</div>
+<script>
+function cell(text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text ?? "";
+  if (cls) td.className = cls;
+  return td;
+}
+
+async function load() {
+  try {
+    const res = await fetch("signals.json?t=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const rows = data.rows || [];
+
+    document.getElementById("updated").textContent = "Diperbarui: " + data.updated;
+
+    const latest = document.getElementById("latest");
+    latest.textContent = "";
+    if (rows.length) {
+      const t = rows[0];
+      const head = document.createElement("div");
+      head.className = t.action;
+      head.style.fontWeight = "bold";
+      head.textContent = t.action + " • " + t.time;
+      const detail = document.createElement("div");
+      detail.textContent = t.action === "NO_TRADE"
+        ? t.reason
+        : `Area ${t.entry_low} - ${t.entry_high} | SL ${t.sl} | TP ${t.tp}`;
+      latest.append(head, detail);
+    }
+
+    const tbody = document.getElementById("rows");
+    tbody.textContent = "";
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      tr.append(
+        cell(r.time),
+        cell(r.action, r.action),
+        cell(r.action === "NO_TRADE" ? "" : `${r.entry_low} - ${r.entry_high}`),
+        cell(r.sl),
+        cell(r.tp),
+        cell(r.reason)
+      );
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    document.getElementById("updated").textContent = "Gagal memuat data: " + e.message;
+  }
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
