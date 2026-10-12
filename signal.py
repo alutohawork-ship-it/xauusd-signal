@@ -23,7 +23,7 @@ def now_str():
 def fetch(interval):
     key = os.environ.get("8c868d19f62d468592b6bd14f6df85c5", "")
     if not key:
-        raise RuntimeError("secret TWELVEDATA_KEY belum diset")
+        raise RuntimeError("secret 8c868d19f62d468592b6bd14f6df85c5")
     r = requests.get(TD_URL, params={
         "symbol": SYMBOL, "interval": interval, "outputsize": LOOKBACK,
         "timezone": "UTC", "apikey": key,
