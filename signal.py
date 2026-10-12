@@ -98,9 +98,9 @@ def is_duplicate(s):
 
 def notify(text):
     try:
-        token = os.environ["TELEGRAM_TOKEN"]
+        token = os.environ["8926741783:AAG1nHi1FG2HoTl7D3d7r8EcIYnAlUg1yuM"]
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                      json={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}, timeout=10)
+                      json={"chat_id": os.environ["524505436"], "text": text}, timeout=10)
     except requests.RequestException as e:
         print(f"notifikasi gagal: {e}")
 
